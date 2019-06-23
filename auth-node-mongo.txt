@@ -1,0 +1,574 @@
+**SISTEMA DE AUTENTICAÇÃO (LOGIN) UTILIZANDO NODE.JS, EXPRESS, MONGODB E ENCRIPTOGRAFANDO A SENHA COM BCRYPT**
+
+**Setando mongodb pela nuvem**
+É possível instalar MongoDB localmente, mas utilizaremos Atlas. A versão Atlas, assim como o firebase, é MongoDB numa nuvem, então é mais tranquilo de configurar.
+
+Primeiramente, crie uma conta aqui https://www.mongodb.com/
+
+Você vai criar um Cluster (você ganha 1 de graça).
+Para isso, clique em Build a New Cluster, selecione a AWS como provedora, selecione a região N. Virginia (não vamos selecionar São Paulo porque não tem a versão gratuita disponível).
+Na segunda Aba (Cluster Tier), selecione a M0 Sandbox, que tem o preço base Free forever.
+Agora na última aba, escolha o nome da sua Cluster. Deixarei Cluster0 como padrão.
+Por último, clique em "Create Cluster") e aguarde.
+(Pode demorar uns minutinhos).
+
+*Você pode executar o próximo passo enquanto o primeiro carrega*
+
+Precisamos de adicionar um usuário relacionado a esse banco de dados para que possamos acessá-lo. 
+Na barra lateral esquerda, dentro de Security, abra a aba Database Access.
+Clique em "+ ADD NEW USER", ponha um usuário e senha e selecione "Read and write to any database".
+Depois, ainda dentro de security, abra a aba Network Access.
+Clique em "+ ADD IP ADDRESS" e você pode adicionar o seu IP atual clicando no botão "ADD CURRENT IP ADDRESS", mas você também pode adicionar 0.0.0.0, permitindo qualquer um com o seu usuário e senha de acessar (é o que farei).
+
+Uma vez que já setamos tudo na nossa Cluster, volte para a aba Clusters (dentro de Atlas) e clique em CONNECT, então Connect Your Application e copie o Short SRV connection string (é mais curto).
+
+**Criando projeto node**
+
+Crie um diretório, execute o comando npm init dentro dele, mude o entry point para app.js e a license para MIT. Sinta-se livre com o resto ou deixe padrão.
+
+Não pretendo mostrar como estruturar um projeto em Node aqui, se quiser mais informações eu expliquei no README do repositório do  primeiro texto que postei em #materiais.
+https://github.com/kbmelo/integrating-node-mysql
+
+Para continuar acompanhando, aconselho a clonar esse projeto que fiz para ensinar a estrutura:
+https://github.com/kbmelo/teaching-node/tree/master
+
+Dependências
+Rode:
+`npm i --save express ejs bcryptjs passport passport-local mongoose connect-flash express-session dotenv`
+**express** - Vai nos ajudar a criar o servidor
+**ejs** - Formato que nos permite colocar códigos de javascript dentro do código de HTML.
+**bcryptjs** - Usaremos para encriptografar senhas
+**passport** - Usaremos para autenticação
+**passport-local** - Cada Strategy (mecanismo de autenticação) que usaremos com o passport deverá ser instalada como um pacote separado, usaremos passport-local porque usaremos uma Strategy local.
+**mongoose** - Usaremos para mexer com o MongoDB
+**connect-flash** - Para mensagens Flash.
+**express-session** - connect-flash depende disso.
+**dotenv** - Vai permitir que você importe variáveis do arquivo .env.
+
+Mais sobre express-ejs-layout https://www.npmjs.com/package/express-ejs-layouts
+Mais sobre passport e strategies http://www.passportjs.org/docs/
+
+Caso ainda não possua, instale o nodemon para facilitar para rodar o projeto e não ter que ficar manualmente resetando o servidor sempre que alterar algo.
+`sudo npm i -g nodemon`
+
+Rotas/views
+Crie (ou edite a partir das rotas existentes, se tiver clonado o repositório) duas rotas (e views, claro) além da home: /login e /register.
+
+Coloque o código abaixo dentro do body do register.ejs
+```html
+<h1>Sign up</h1>
+<form action="/register" method="POST">
+	<label for="name">Name</label>
+	<input
+		type="name"
+		name="name"
+		value="<%= typeof name != 'undefined' ? name : '' %>"
+	/>
+	<br />
+	<label for="email">Email</label>
+	<input
+		type="email"
+		name="email"
+		value="<%= typeof email != 'undefined' ? email : '' %>"
+	/>
+	<br />
+	<label for="password">Password</label>
+	<input
+		type="password"
+		name="password"
+	/>
+	<br />
+	<label for="password2">Confirm password</label>
+	<input
+		type="password"
+		name="password2"
+	/>
+	<br />
+	<input type="submit" value="Register" />
+</form>
+```
+O value que estou colocando nos inputs name e email são uma expressão de javascript que estou colocando com a sintaxe de ejs que tem o seguinte objetivo: Caso o formulário dê errado, quero que os valores desses inputs já estejam de acordo com o que foi escrito antes, então em caso de erro o usuário não teria que digitar novamente.
+
+
+Agora cole esse código abaixo dentro do body do login.ejs
+
+```html
+<h1>Sign in</h1>
+<form action="/login" method="POST">
+	<label for="email">Email</label>
+	<input
+		type="email"
+		name="email"
+		value="<%= typeof email != 'undefined' ? email : '' %>"
+	/>
+	<br />
+	<label for="password">Password</label>
+	<input
+		type="password"
+		name="password"
+	/>
+	<br />
+	<input type="submit" value="Login" />
+</form>
+```
+
+E no home.ejs, só pra ajudar na navegação, coloque os links:
+```html
+<a href="/login">Login</a>
+<a href="/register">Register</a>
+```
+
+Crie mais uma rota, que vai ser a account.ejs no endereço /account, que vai ser a página que queremos exibir ao logar e que não teremos acesso deslogados. Adicione esse conteúdo a ela:
+
+```html
+<h1>Welcome <%= user.name %></h1>
+<a href="/logout">Logout</a>
+```
+
+MongoDB
+
+Em config/server.js, importe o mongoose
+```javascript
+const mongoose = require('mongoose');
+```
+Crie um arquivo.env e crie uma variável com o valor da string que você copia pelo Atlas.
+```
+MONGO_URI='mongodb+srv://kbmelodb:kbmelodb@cluster0-qzzyl.mongodb.net/test?retryWrites=true&w=majority'
+```
+Não esqueça de trocar o <password> pela senha que você criou.
+Então, em server.js, adicione a linha
+```javascript
+require('dotenv').config();
+```
+Para que tenhamos acesso às variáveis do .env.
+
+Prossiga no server.js adicionando isso:
+```javascript
+mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true })
+  .then(() => console.log('MongoDB Connected'))
+  .catch(err => console.log(err));
+```
+O método connect do mongoose recebe a nossa string para se conectar. O segundo parâmetro que estamos passando é porque as versões mais recentes do body-parser recebem um warning porque não tem esse valor como default mais, mas é só adicioná-lo que o warning sai. "Mas calma, não instalamos o body-parser..." Isso porque as versões mais recentes do express já vem com o body-parser. Pode checar na pasta node-modules.
+A saída disso vai ser uma Promisse, então podemos seguir com um "then", passando um console.log se tiver a conexão tiver sido feita e um catch para caso dê erro nós possamos identificá-lo.
+Por estar modularizado, você ainda não vai ver o console.log no terminal, só se copiar e colar esse código em uma parte do código que já foi chamada ou no app.js.
+
+No root, crie uma pasta chamada models e dentro dela o arquivo User.js.
+Aqui criaremos o Schema com as informações que o usuário deve ter. Adicione esse código:
+```javascript
+const mongoose = require('mongoose');
+
+const UserSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true
+  },
+  email: {
+    type: String,
+    required: true
+  },
+  password: {
+    type: String,
+    required: true
+  },
+  date: {
+    type: Date,
+    default: Date.now
+  }
+});
+
+const User = mongoose.model('User', UserSchema);
+
+module.exports = User;
+```
+Passamos um objeto como parâmetro para criar o novo schema com as informações e propriedades delas.
+Depois, criamos um modelo do nosso Schema, salvamos em uma variável e exportamos.
+
+Já que vamos receber dados do form, adicione o body-parser. Lembrando que não temos mais que instalá-lo como um módulo separado. Adicione essa linha ao config/server.js.
+```javascript
+app.use(express.urlencoded({ extended: false }));
+```
+
+Requisições e validações
+
+Em register.js, vamos adicionar o método post e testar se estamos conseguindo pegar os dados adicionando:
+```javascript
+app.post('/register', (req, res) => {
+  res.send(req.body);
+});
+```
+Dessa forma, ao preenchermos o formulário de registro e enviarmos, deveremos ser encaminhados para uma página com os nossos dados no formato JSON.
+
+Agora adicione esse código no lugar do app.post anterior:
+```javascript
+app.post('/register', (req, res) => {
+    const { name, email, password, password2 } = req.body;
+    let errors = [];
+    //Checking for unfilled fields
+    if(!name || !email || !password || !password2) {
+      errors.push({ msg: 'Please, fill in all the fields' });
+    }
+    //Checking if passwords match
+    if(password !== password2) {
+      errors.push({ msg: 'Passwords don\'t match' });
+    }
+
+    //Checking password length
+    if(password.length < 6) {
+      errors.push({ msg: 'Password should have at least 6 characters' });
+    }
+
+    if(errors.length) {
+      res.render('register', {
+        errors,
+        name,
+        email
+      });
+    }
+    else {
+      res.send('pass');
+    }
+  });
+```
+Na segunda linha, estou pegando as variáveis do objeto vindo do formulário. Então eu crio um array chamado errors e faço algumas validações. Se houver algum erro, eu adiciono uma mensagem relacionada a esse erro ao array errors. 
+Então finalmente, se errors.length for diferente de 0, ou seja, se tiver algum erro, quero rodar a página de novo passando algumas variáveis para ela. Essas variáveis são os erros (que eu quero mostrar ao usuário), o nome e o email (que eu quero poupar o usuário do trabalho de reescrever).
+
+Então, adicionando esse pedaço de código ao register.ejs:
+```html
+<% if(typeof errors != 'undefined') { %>
+  <% errors.forEach((error) => { %>
+  <p><%= error.msg %></p>
+  <% }) %>
+<% } %>
+```
+Estarei dizendo "se tiver erros, quero um <p> para cada um informando a mensagem". Lembrando que o errors é um array onde cada item é um objeto com a key msg e o valor da string que atribuímos.
+
+Agora vamos trabalhar em cima do else da nossa validação. Se tudo estiver certinho, o que precisaremos fazer?
+Primeiramente, vamos importar o nosso modelo User lá no começo do código.
+
+```javascript
+const User = require('../../models/User');
+```
+E agora poderemos utilizar métodos de User.
+
+Dentro do else, adicione:
+
+```javascript
+User.findOne({ email: email })
+  .then(user => {
+    if(user) {
+      //User exists
+      errors.push({ msg: 'Email is already registered' });
+      res.render('register', {
+        errors,
+        name,
+        email
+      });
+    }
+    else {
+      
+    }
+  });
+```
+O findOne() é um método do mongo que busca algum dado para a gente, ele retorna uma Promisse. Então, se o usuário existir, adiciononaremos um erro ao array errors e renderizaremos novamente register passando errors, name e email. Caso o email ainda não esteja cadastrado, precisaremos encriptografar a senha.
+Para isso, inpomrt o bcrypt no começo do arquivo:
+```javascript
+const bcrypt = require('bcryptjs');
+```
+E dentro do nosso novo else, adicione:
+```javascript
+const newUser = new User({
+	name,
+	email,
+	password
+});
+res.send(newUser);
+```
+Digitando dados válidos agora, você deverá cair numa página com o User que o MongoDB criou e poderá reparar que o Mongo cria um _id.
+Mas atenção, isso não foi salvo no nosso banco de dados porque ainda não chamamos User.save().
+Repare, observando os dados, que recebemos uma string com a senha, não queremos isso.
+Encriptografando, nosso else inteiro vai ficar assim:
+```javascript
+else {
+  const newUser = new User({
+    name,
+    email,
+    password
+  });
+
+  //Hash password
+  bcrypt.genSalt(10, (err, salt) => {
+    bcrypt.hash(newUser.password, salt, (err, hash) => {
+      if(err) throw err;
+      //Set password to hashed
+      newUser.password = hash;
+      //Save user
+      newUser.save()
+        .then(user => {
+          res.redirect('/login');
+        })
+        .catch(err => console.log(err));
+    });
+  });
+}
+```
+Vamos utilizar o método genSalt do bcrypt e ele vai receber 2 parâmetros.
+O primeiro é o salt round, que significa o fator custo. Ele vai controlar quanto tempo é necessário para calcular uma única hash BCrypt. Quanto maior o valor, mais rodadas de hash serão feitas. Aumentar o valor de custo em 1, duplica o tempo necessário. Mais informações sobre o BCrypt aqui https://www.npmjs.com/package/bcrypt
+O segundo parâmetro é uma função de call back que recebe um possível erro e salt. Dentro desta, chamaremos o método hash (encarregado de criar a senha criptografada) e passaremos 3 parâmetros. O primeiro é a senha em formato de string, o segundo é o salt e o terceiro é outra função de callback que recebe um possível erro e o hash (Senha encriptografada).
+Não tendo erro, atribuimos a hash à senha do newUser e salvaremos o newUser no nosso database.
+O método save() retorna uma Promisse. Dela, redirecionaremos para a tela de login.
+
+E assim nós FINALMENTE salvamos algo no banco de dados, pode checar indo no cluster na aba collections. Os dados que você digitou com a senha lindamente horrível estarão salvos.
+
+Vamos só fazer mais uma coisa antes de ir pro login, vamos usar as flash messages para mostrar uma mensagem para o usuário dizendo que agora ele está logado ao invés de simplesmente redirecionar ele para a página de login.
+
+Em config/server.js, import o connect-flash e o express-session
+```javascript
+const flash = require('connect-flash');
+const session = require('express-session');
+```
+
+```javascript
+const flash = require('connect-flash');
+const session = require('express-session');
+```
+
+E a gente precisa setar essas duas coisas para poder usar as mensagens flash:
+
+//Express Session
+app.use(session({
+  secret: 'secret',
+  resave: true,
+  saveUninitialized: true
+}));
+```javascript
+//Connect flash
+app.use(flash());
+```
+(Não me pergunte o porquê, só sei que funciona assim baseado na documentação e num vídeo).
+Agora nós devemos ter acesso ao req.flash(). Mas supondo que teríamos cores diferentes para mensagens diferentes (sucesso = verde e erro = vermelho, por exemplo), vamos criar variáveis globais no server.js. Para isso, vamos adicionar nosso próprio middleware:
+```javascript
+app.use((req, res, next) => {
+	res.locals.success_msg = req.flash('success_msg');
+	res.locals.error_msg = req.flash('error_msg');
+	next();
+});
+```
+res.locals.nome_variavel é a sintaxe para criarmos variáveis globais.
+
+Em ./app/routes/register.js, vamos querer chamar a mensagem de sucesso logo antes do res.redirect() de quando dá certo.
+
+```javascript
+then(user => {
+	req.flash('success_msg', 'You are now registered and can log in');
+	res.redirect('/login');
+})
+```
+Em login.ejs, adicionaremos:
+```html
+<% if(success_msg != '') { %>
+  <p><%= success_msg %></p>
+<% } %>
+```
+Então se tiver uma mensagem de sucesso, deverá ser exibido um <p> com a mensagem.
+Mesma ideia deve ser seguida para o erro, porém será renderizado em /register.
+
+Login
+
+O passport tem várias Strategies, como vocês podem checar na documentação. Vamos utilizar a local, como citei quando estava falando das dependências.
+
+Dentro de config, crie um arquivo chamado passport.js. Nele, importe a localStrategy, o mongoose (porque vamos ter que vamos ter que checar se as informações batem), bcrypt para comparar as hashes e o modelo do nosso usuário.
+Então vamos exportar uma função que recebe passport.
+
+```javascript
+const LocalStrategy = require('passport-local').Strategy;
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+
+const User = require('../models/User');
+
+module.exports = (passport) => {
+	passport.use(
+		new LocalStrategy({ usernameField: 'email' }, (email, password, done) => {
+			User.findOne({ email: email })
+        .then(user => {
+          if(!user) {
+            return done(null, false, { message: 'That email is not registered' });
+          }
+        })
+        .catch(err => console.log(err));
+		})
+	);
+}
+```
+Vamos usar o método passport.use() e passaremos como parâmetro uma LocalStrategy, que recebe um objeto com propriedades como usernameField (como não estamos utilizando username, colocaremos o email) e uma função de callback. Essa função recebe o email, password e done.
+A primeira coisa que queremos fazer é checar se existe o email digitado no nosso banco de dados. Para isso, utilizaremos o método findOne do mongoose novamente.
+Se o email não bater, retornaremos done passando como parâmetro null (para o erro), false (para o user) e o objeto com a mensagem para options.
+
+Então, se encontramos o email, vamos ter que checar a senha agora.
+
+Usaremos bcrypt, porque a senha no banco de dados está encriptografada e a que acabaram de enviar não está.
+Então usaremos:
+```javascript
+bcrypt.compare(password, user.password, (err, isMatching) => {
+	if(err) throw err;
+
+	if(isMatch) {
+		return done(null, user);
+	}
+	else {
+		return done(null, false, {message: 'Password incorrect'});
+	}
+});
+```
+O método compare recebe a senha digitada, a que recebemos do user do database e uma função de callback.
+Essa função de callback recebe um possível erro e um booleano (true se as senhas coincidiram, false caso não).
+Então, coincidindo a senha nós saíremos da função com um done retornando null pro erro e o usuário encontrado.
+Não coincidindo, retornaremos null pro erro, false pro usuário e a mensagem indicando que a senha está incorreta.
+
+Normalmente, quando você loga numa aplicação, as credenciais do seu login são apenas transmitidas quando você loga. Você se mantém logado através de informação via cookie. Isso evita que suas credenciais sejam cobradas a cada request.
+
+Nesta página da documentação, tenta explicar melhor como o passport faz isso e nos fornece o código que devemos utilizar. Esse:
+http://www.passportjs.org/docs/configure/
+```javasccript
+passport.serializeUser((user, done) => {
+  done(null, user.id);
+});
+
+passport.deserializeUser((id, done) => {
+  User.findById(id, (err, user) => {
+    done(err, user);
+  });
+});
+```
+Só alterei as functions para arrow functions. Jogue esse código no final do module.exports do passport.js.
+
+Precisamos adicionar mais duas linhas de Middleware, que também estão nessa página da documentação. Então jogue isso no server.js entre os middlewares de express session e o connect flash:
+```javasccript
+//passport middleware
+app.use(passport.initialize());
+app.use(passport.session());
+```
+Vai dar erro dizendo que passport não foi definido, importe:
+```javascript
+const passport = require('passport');
+
+//Passort config
+require('./passport')(passport);
+```
+Aí estaremos passando passport e resolverá o erro.
+
+Para o login, importe passport no login.js
+```javascript
+const passport = require('passport');
+```
+E adicione o método post
+```javascript
+app.post('/login', (req, res, next) => {
+  passport.authenticate('local', {
+    successRedirect: '/account',
+    failureRedirect: '/login', 
+    failureFlash: true
+  })(req, res, next);
+});
+```
+Aí você está dizendo para autenticar usando a local strategy e passando um objeto com alguns parâmetros.
+Os nomes tornam bem intuitivos, por exemplo "successRedirect" é para onde deve redirecionar no caso de sucesso. Devemos passar os parênteses com req, res e next no final.
+Se você tentar logar com algo que não funciona, ele simplesmente redireciona para a página login. O erro que ele dá, vai para req.flash('error'). Então vamos salvar este erro junto com as outras variáveis globais que salvamos em server.js.
+```javascript
+res.locals.error = req.flash('error');
+```
+E adicionaremos ao login.ejs
+```html
+<% if(error != '') { %>
+  <p><%= error %></p>
+<% } %>
+```
+Dessa forma, se você digitar um email não cadastrado vai receber uma mensagem que o email não foi cadastrado. Se digitar um email cadastrado e errar a senha, vai receber que a senha está incorreta.
+
+Se você logar com um usuário certo agora, você vai dar um erro porque o conteúdo do account.ejs é:
+```html
+<h1>Welcome <%= user.name %> </h1>
+<a href="/logout">Logout</a>
+```
+E ainda não estamos passando o nome do usuário. Então vamos remover essa expressão de ejs POR ENQUANTO.
+
+
+Para deslogar, adicione esse código ao login.js:
+```javascript
+app.get('/logout', (req, res) => {
+	req.logout();
+	req.flash('success_msg', 'You are logged out');
+	res.redirect('login');
+});
+```
+Você está dizendo que quando o '/logout' for acessado, você vai chamar o método logout(), atribuir "you are logged out" a success_msg e redirecionar para a tela de login.
+
+Se você agora tentar acessar localhost:3000/account, você conseguirá mesmo sem estar logado. Então vamos implementar um autenticador.
+
+Dentro da pasta config, crie auth.js e coloque esse código:
+```javascript
+module.exports = {
+  ensureAuthenticated: (req, res, next) => {
+    if(req.isAuthenticated()) {
+      return next();
+    }
+    req.flash('error_msg', 'Please log in to view this resource');
+    res.redirect('/login');
+  }
+}
+```
+Você vai exportar um objeto com um item que recebe valor de uma função com parâmetros req, res e next.
+Dentro, você vai usar um dos métodos fornecidos pelo passport para validar a autenticação.
+Se a pessoa estiver autenticada, você retorna o next. Caso não, uma mensagem de erro e redireciona para a tela de login.
+Você pode usar isso em quantas páginas você quiser como middleware.
+
+Então em account.js, importe o nosso objeto e passe ele como segundo parâmetro do get:
+```javascript
+const { ensureAuthenticated } = require('../../config/auth');
+
+module.exports = (app) => {
+  app.get('/account', ensureAuthenticated, (req, res) => {
+    res.render('account');
+  });
+}
+```
+E adicione no seu login um ejs para escrever o erro:
+```html
+<% if(error_msg != '') { %>
+  <p><%= error_msg %></p>
+<% } %>
+```
+
+Agora, para exibir o nome do usuário ao acessar "/account", vamos passar como segundo parâmetro do método render do account.js o objeto:
+```javascript
+{
+  name: req.user.name
+}
+```
+E como já estamos passando o name do user (mais específico do que passar o user inteiro), basta adicionar ao account.ejs:
+```html
+<h1>Welcome, <%= name %> </h1>
+<a href="/logout">Logout</a>
+```
+
+E assim, temos o nosso projeto rodando o sistema de validação certinho.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
